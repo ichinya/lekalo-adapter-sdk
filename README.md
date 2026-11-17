@@ -1,26 +1,26 @@
 # lekalo-adapter-sdk
 
-Общий репозиторий необязательных SDK для авторов адаптеров [Lekalo](https://github.com/ichinya/lekalo). Отдельные пакеты для Rust, TypeScript, Go и PHP могут выпускаться независимо.
+Optional SDKs for independently authored Lekalo adapters. The host does not link this repository or register its implementation languages.
 
-## Статус
+The Go, PHP, Rust and TypeScript packages, generator, reference templates and 1,149-vector corpus live here. Their existing `lekalo.target/v1` API and versions are preserved. The newer `lekalo/runtime/v1` contract is pinned in `contracts/external-runtime.schema.v1.json`; these legacy SDK helpers must not be presented as an implementation of that different protocol.
 
-Репозиторий подготовлен для выделения существующей реализации. Код ещё не перенесён; пакет пока не готов к установке или использованию.
+## Develop and verify
 
-- Перенос реализации: [#1](https://github.com/ichinya/lekalo-adapter-sdk/issues/1).
-- Общий план: [lekalo#241](https://github.com/ichinya/lekalo/issues/241).
+- `node scripts/generate-adapter-sdk.mjs --check` checks reproducible generation for all four packages.
+- `node --test sdk/typescript/test/stream.mjs sdk/typescript/test/conformance.mjs`
+- `node sdk/typescript/test/vectors.mjs` runs the TypeScript codec corpus without a host checkout.
+- `cargo test --locked --manifest-path sdk/rust/Cargo.toml`
+- `cd sdk/go && go test ./...`
+- `node scripts/test-adapter-sdk-contracts.mjs` requires Ajv 8.20.0 in `LEKALO_AJV_NODE_PATH`.
+- `node scripts/test-adapter-sdk-packages.mjs --verify --language typescript` verifies a detached packed consumer. `--language all` additionally requires Rust, Go and PHP >=8.3.
 
-## Ответственность пакета
+Host integration takes independently built executables, never imports host sources or builds a presumed sibling checkout:
 
-- SDK Rust/TypeScript/Go/PHP: protocol types, decoding/validation helpers, canonical bytes, serve loop и logging.
-- Генератор SDK из закреплённых protocol schemas, общие vectors и compatibility records.
-- Минимальные templates reference/scan/generate/verify и документация для авторов адаптеров.
+```sh
+LEKALO_BIN=/absolute/path/lekalo LEKALO_SDK_ORACLE=/absolute/path/adapter-sdk-oracle node scripts/test-adapter-sdk-vectors.mjs --language all
+LEKALO_BIN=/absolute/path/lekalo node scripts/test-adapter-sdk-conformance.mjs --language all
+```
 
-## Источник переноса
+`protocol-inputs.lock.json` records the exact host commit and hashes of the public schemas and handwritten test controls. These are reviewed protocol inputs, not runtime implementation dependencies. Update those pins deliberately when adopting a host contract change.
 
-`lekalo/sdk/`, `scripts/generate-adapter-sdk.mjs`, связанные SDK generators/tests и `docs/adapter-sdk.md`.
-
-## Границы
-
-Canonical protocol schemas и финальная host-conformance остаются авторитетом core, потребляются по точным version/digest pins. SDK не обязателен: совместимый процесс может реализовать протокол самостоятельно. Язык SDK — язык реализации адаптера, а не обязательно язык анализируемого приложения.
-
-Версия пакета, версия provider/protocol API и версия языка или движка приложения фиксируются отдельно. Сборка и тесты должны быть автономными; источники и зависимости закрепляются точными версиями и digest. Выбор произвольного совместимого Git/local package и загрузка его зависимостей отслеживаются в [lekalo#239](https://github.com/ichinya/lekalo/issues/239).
+See [SDK guide](sdk/README.md), [specification](sdk/spec.md) and [generation inputs](sdk/schema-inputs.json).

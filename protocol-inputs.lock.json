@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/ichinya/lekalo",
+  "commit": "5fa682cb1eb63aa863e98ab9270289b43c3bea02",
+  "files": {
+    "contracts/target-protocol.schema.v0.3.2.json": "sha256:8af325a150a64c04ab8cbe4838e039e3026e46ebbea8a0385c80153b8935825f",
+    "contracts/target-protocol.schema.v0.6.4.json": "sha256:40a169699324b537d7a9cbdf199f69201fb90db65c31deab49797cd7a4c5fcce",
+    "contracts/diagnostic-registry.v0.6.4.json": "sha256:323d4614eef262b5d4a3a0afaab9e07a4921a7c409bb3f64d16c93060ff71e9f",
+    "contracts/adapter-sdk-compatibility.schema.v0.8.0.json": "sha256:39ba04f421bcb5cb60fe0658cce49b6f818668d9cb47a299bfbdd7c38c3b36b9",
+    "contracts/adapter-sdk-generation.schema.v0.8.0.json": "sha256:580a619218e880daea75a8da679612d6472aaca6c8af8f66072d026f935afdb4",
+    "contracts/external-runtime.schema.v1.json": "sha256:8cf8cf1fe5f60b8a1fa74901676751d1595363d973220690b79fa887d8ce8565",
+    "tests/fixtures/target-protocol/fake-adapter.mjs": "sha256:a787422a0031fb4083a96476129c4344e15dec2f115da86bef2c86595887864b",
+    "tests/fixtures/target-protocol/file-only-adapter.mjs": "sha256:2f94a30dbba6858d883c8b2092b8f4916026ea31978a0c0f478e600ef65d1d88"
+  }
+}
