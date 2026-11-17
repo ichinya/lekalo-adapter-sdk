@@ -1,0 +1,389 @@
+#!/usr/bin/env node
+/**
+ * The hermetic fake target adapter (issues #27 and #28).
+ *
+ * A dependency-free Node.js adapter implementing the full
+ * `lekalo.target/v1` handshake: describe negotiation, every v1 operation,
+ * deterministic plans, and honest write plans. It exists to prove the
+ * protocol is language-neutral and to exercise the core client: an adapter
+ * needs nothing but stdin/stdout, JSON, and SHA-256.
+ *
+ * Fault injection for the contract tests, via LEKALO_FAKE_ADAPTER:
+ *   wrong-token   respond with a foreign protocol token
+ *   wrong-version respond with an unsupported exact version
+ *   garbage       emit non-JSON on stdout
+ *   crash         exit non-zero without a response envelope
+ *   hang          never respond (deadline enforcement)
+ *   noise         write unbounded chatter to stderr
+ *   bad-echo      echo a foreign request id
+ *   boom          report an in-envelope operation error for any operation
+ *   fail-verify   report an in-envelope operation error for verify only
+ *   mutate-dry    write during a dry-run generate (must be refused)
+ *   extra-write   write an undeclared file during an apply (must be caught)
+ *
+ * The adapter is deterministic: the same request inputs always produce the
+ * same plan and the same bytes, which is what makes the core's
+ * dry-run-plan/apply cross-check workable without persisted state.
+ */
+
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { dirname } from "node:path";
+
+const fault = (name) => FAULT.split(",").includes(name);
+
+const faultArg = process.argv.indexOf("--lekalo-fault");
+const FAULT =
+  faultArg !== -1 && process.argv[faultArg + 1]
+    ? process.argv[faultArg + 1]
+    : (process.env.LEKALO_FAKE_ADAPTER ?? "");
+
+/**
+ * The declared capability profile (issue #28): `legacy` (default) speaks
+ * exactly the 0.3.1 contract; the fluent variants additionally declare
+ * protocol 0.3.1 and answer a 0.3.1 describe with IR versions, named
+ * capability support states, and constraints. `unknown` declares unknown
+ * states, `incompatible` declares an IR set without the core IR version,
+ * and `partial` is the issue's example map.
+ */
+const variantArg = process.argv.indexOf("--lekalo-adapter-variant");
+const VARIANT =
+  variantArg !== -1 && process.argv[variantArg + 1]
+    ? process.argv[variantArg + 1]
+    : (process.env.LEKALO_ADAPTER_VARIANT ?? "minimal");
+
+/**
+ * Fixture knob for the issue #91 hostile-write probes: the managed root
+ * the generated output and its write scope live under. The default keeps
+ * the published `.lekalo/generated` home; CLI-level end-to-end probes
+ * select an artifact-legal home such as `src/generated`.
+ */
+const writeRootArg = process.argv.indexOf("--lekalo-write-root");
+const WRITE_ROOT =
+  writeRootArg !== -1 && process.argv[writeRootArg + 1]
+    ? process.argv[writeRootArg + 1]
+    : (process.env.LEKALO_WRITE_ROOT ?? ".lekalo/generated");
+
+const sidecarArg = process.argv.indexOf("--lekalo-sidecar");
+const SIDECAR =
+  sidecarArg !== -1 && process.argv[sidecarArg + 1]
+    ? process.argv[sidecarArg + 1]
+    : (process.env.LEKALO_SIDECAR ?? "");
+
+/**
+ * Fixture knobs for the issue #31 conformance suite: an alternative
+ * adapter identity (the "foreign implementation" class) and an
+ * operation-subset filter (the "unsupported capability" class).
+ */
+const identityArg = process.argv.indexOf("--lekalo-adapter-identity");
+const IDENTITY = identityArg !== -1 ? process.argv[identityArg + 1] : undefined;
+const opsArg = process.argv.indexOf("--lekalo-adapter-ops");
+const OPS_FILTER = opsArg !== -1 ? process.argv[opsArg + 1].split(",") : undefined;
+
+const FLUENT = VARIANT !== "legacy";
+const CAPABILITY_PROFILES = {
+  fluent: {
+    "scan.symbols": "full",
+    "generate.zod": "full",
+    "generate.openapi": "partial",
+    "verify.scenarios": "full",
+    "generate.ui": "unsupported",
+  },
+  // The issue #70 fixture variant: the fluent surface plus the
+  // declared `verify.transport-http` capability, so the conformance
+  // battery exercises the black-box scenario row end to end (its pass
+  // and failure paths are pinned in the adapter_conformance suite).
+  transport: {
+    "scan.symbols": "full",
+    "generate.zod": "full",
+    "generate.openapi": "partial",
+    "verify.scenarios": "full",
+    "verify.transport-http": "full",
+    "generate.ui": "unsupported",
+  },
+  unknown: {
+    "scan.symbols": "unknown",
+    "generate.zod": "full",
+    "generate.openapi": "full",
+    "verify.scenarios": "full",
+    "generate.ui": "unknown",
+  },
+  incompatible: {
+    "scan.symbols": "full",
+    "generate.zod": "full",
+    "generate.openapi": "full",
+    "verify.scenarios": "full",
+    "generate.ui": "unsupported",
+  },
+  partial: {
+    "scan.symbols": "full",
+    "generate.zod": "partial",
+    "generate.openapi": "partial",
+    "verify.scenarios": "partial",
+    "generate.ui": "unsupported",
+  },
+};
+
+const ADAPTER = {
+  id: IDENTITY ?? "node-typescript",
+  version: "0.3.2",
+  digest: sha256("lekalo fake target adapter v1"),
+};
+
+const ALL_OPERATIONS = [
+  "describe",
+  "scan",
+  "bind",
+  "validate",
+  "generate",
+  "verify",
+  "clean",
+  "plan-clean",
+  "plan-native",
+];
+const OPERATIONS = OPS_FILTER
+  ? ALL_OPERATIONS.filter((op) => OPS_FILTER.includes(op))
+  : ALL_OPERATIONS;
+
+function sha256(text) {
+  return "sha256:" + createHash("sha256").update(text).digest("hex");
+}
+
+/** Canonical compact JSON: byte-sorted keys, exactly like the core. */
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    const body = Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
+      .join(",");
+    return `{${body}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function readRequest() {
+  const marker = process.argv.indexOf("--lekalo-request-file");
+  if (marker !== -1 && process.argv[marker + 1]) {
+    return readFileSync(process.argv[marker + 1], "utf8");
+  }
+  return readFileSync(0, "utf8");
+}
+
+function deterministicWrites(request) {
+  const target = request.target ?? "node-typescript";
+  const profile = request.profile ?? "default";
+  const irPath = request.ir_path ?? ".lekalo/ir/planner.json";
+  // The `nondeterministic` fault (issue #31 fixture class) varies the
+  // generated bytes per process so repeated runs never agree.
+  const nonce = fault("nondeterministic") ? `// nonce: ${process.pid}-${Date.now()}\n` : "";
+  const body = `${nonce}// generated by ${ADAPTER.id}@${ADAPTER.version}\n// target: ${target}\n// profile: ${profile}\n// ir: ${irPath}\n`;
+  const path = `${WRITE_ROOT}/${ADAPTER.id}/model.ts`;
+  const writes = [{ path, action: "create", sha256: sha256(body) }];
+  const modelPath = path;
+  // Issue #58 sidecar knob: the three ingestion shapes a `.map.json`
+  // sibling can take — a valid source map, a document without a
+  // declarations member (binds nothing), and a corrupt declarations
+  // member (hard failure).
+  const sidecars = {};
+  if (SIDECAR === "valid") {
+    sidecars["model.map.json"] = JSON.stringify({
+      declarations: [{ id: "planner.generated", start: 0, end: 8 }],
+    });
+  } else if (SIDECAR === "absent") {
+    sidecars["side.map.json"] = '{"types":[]}';
+  } else if (SIDECAR === "corrupt") {
+    sidecars["corrupt.map.json"] = '{"declarations":"corrupt"}';
+  }
+  for (const [name, content] of Object.entries(sidecars)) {
+    writes.push({
+      path: `${WRITE_ROOT}/${ADAPTER.id}/${name}`,
+      action: "create",
+      sha256: sha256(content),
+    });
+  }
+  // The wire plans are path-sorted (closed v1 grammar).
+  writes.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return { body, writes, sidecars, modelPath };
+}
+
+function planId(writes) {
+  return "plan-" + sha256(canonical(writes)).slice("sha256:".length);
+}
+
+function capabilities(requestedVersion) {
+  const declared = {
+    adapter: ADAPTER,
+    protocol_versions: ["0.3.2"],
+    operations: OPERATIONS,
+    targets: ["node-typescript"],
+    profiles: ["default"],
+    read_scopes: [".lekalo/ir/**", ".lekalo/cache/ir/**"],
+    transports: ["stdin", "file"],
+    progress: true,
+    write_scopes: [`${WRITE_ROOT}/${ADAPTER.id}/**`],
+  };
+  if (!FLUENT && VARIANT !== "legacy") {
+    declared.ir_versions = ["0.2.16"];
+  }
+  if (FLUENT) {
+    declared.ir_versions = VARIANT === "incompatible" ? ["0.2.0"] : ["0.2.16"];
+    declared.capabilities = CAPABILITY_PROFILES[VARIANT] ?? CAPABILITY_PROFILES.fluent;
+    declared.constraints = { max_entries: 10000 };
+  }
+  return declared;
+}
+
+function respond(request, payload) {
+  const envelope = {
+    protocol: fault("wrong-token") ? "lekalo.target/v0" : "lekalo.target/v1",
+    protocol_version: fault("wrong-version") ? "0.9.0" : request.protocol_version,
+    operation: request.operation,
+    request_id: fault("bad-echo") ? "req-" + "0".repeat(64) : request.request_id,
+    status: "ok",
+    evidence: { adapter: ADAPTER },
+    ...payload,
+  };
+  process.stdout.write(canonical(envelope));
+}
+
+function fail(request, errorClass, code, message) {
+  const envelope = {
+    protocol: "lekalo.target/v1",
+    protocol_version: request.protocol_version,
+    operation: request.operation,
+    request_id: request.request_id,
+    status: "error",
+    evidence: { adapter: ADAPTER },
+    error: { class: errorClass, code, message, partial: false },
+  };
+  process.stdout.write(canonical(envelope));
+}
+
+const request = JSON.parse(readRequest());
+
+// In-serve fault knobs (issue #106 review r4 #7): the same closed
+// vocabulary as the SDK reference templates, so the lifecycle recipe
+// matrix stays uniform across lanes. callback-error answers with a
+// closed error envelope (the callback-failure contract), callback-hang
+// stalls past every deadline, and log-verbose floods bounded stderr
+// without disturbing the run.
+if (fault("handler-crash")) {
+  throw new Error("callback exploded inside the control handler");
+}
+if (fault("callback-error")) {
+  fail(request, "infrastructure", "callback-error", "the handler deliberately refused");
+  process.exit(0);
+}
+if (fault("log-verbose")) {
+  for (let index = 0; index < 200; index += 1) process.stderr.write(`verbose lifecycle tick ${index}\n`);
+}
+
+if (fault("crash")) process.exit(3);
+if (fault("garbage")) {
+  process.stdout.write("<this is not json>");
+  process.exit(0);
+}
+if (fault("callback-hang")) {
+  // The handler stalls past every deadline; the host terminates.
+  setTimeout(() => {
+    respond(request, {});
+    process.exit(0);
+  }, 60_000);
+} else if (fault("hang")) {
+  setTimeout(() => process.exit(0), 60_000);
+} else if (fault("noise")) {
+  // The stderr-bound class (issue #106 review r4 #7): one 2MB unbounded
+  // burst on stderr exactly like the SDK templates' noise knob — the
+  // battery's stderr bounds must refuse the run. The response itself
+  // stays the ordinary one, so the failure is attributable to the
+  // output bound, not a broken envelope (the old chatter branch
+  // answered describe with an empty payload, masking the class).
+  process.stderr.write("x".repeat(2_000_000));
+  respond(request, request.operation === "describe" ? { capabilities: capabilities(request.protocol_version) } : {});
+} else if (fault("boom")) {
+  fail(request, "invalid", "fake-invalid", "injected operation failure");
+} else {
+  switch (request.operation) {
+    case "describe":
+      respond(request, { capabilities: capabilities(request.protocol_version) });
+      break;
+    case "scan":
+      respond(request, {
+        result: {
+          entries: [
+            { path: "src/main.ts", kind: "source" },
+            { path: "src/util.ts", kind: "source" },
+          ],
+          truncated: false,
+        },
+      });
+      break;
+    case "bind":
+      respond(request, {
+        result: {
+          bindings: [
+            { module: "planner", target: request.target, profile: request.profile },
+          ],
+        },
+      });
+      break;
+    case "validate":
+      respond(request, { result: { ok: true, findings: [] } });
+      break;
+    case "verify":
+      if (fault("fail-verify")) {
+        fail(request, "invalid", "fake-verify-failed", "injected verify failure");
+        break;
+      }
+      respond(request, { result: { ok: true, findings: [] } });
+      break;
+    case "generate": {
+      const { writes, sidecars } = deterministicWrites(request);
+      const target = deterministicWrites(request).modelPath ?? writes[0].path;
+      if (request.dry_run === false || fault("mutate-dry")) {
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, deterministicWrites(request).body);
+        for (const [name, content] of Object.entries(sidecars)) {
+          mkdirSync(dirname(dirname(target)), { recursive: true });
+          writeFileSync(dirname(target) + "/" + name, content);
+        }
+      }
+      if (fault("extra-write") && request.dry_run === false) {
+        writeFileSync(dirname(target) + "/extra.txt", "undeclared");
+      }
+      respond(request, {
+        writes,
+        evidence: { adapter: ADAPTER, plan_id: request.plan_id ?? planId(writes) },
+        progress: [
+          { step: "compile", state: "done" },
+          { step: "emit", state: "done" },
+        ],
+      });
+      break;
+    }
+    case "plan-clean": {
+      const { writes } = deterministicWrites(request);
+      const plan = writes.map(({ path }) => ({ path, action: "delete" }));
+      respond(request, {
+        writes: plan,
+        evidence: { adapter: ADAPTER, plan_id: planId(plan) },
+      });
+      break;
+    }
+    case "clean": {
+      const { writes } = deterministicWrites(request);
+      const plan = writes.map(({ path }) => ({ path, action: "delete" }));
+      for (const entry of plan) {
+        if (existsSync(entry.path)) rmSync(entry.path);
+      }
+      respond(request, {
+        writes: plan,
+        evidence: { adapter: ADAPTER, plan_id: request.plan_id ?? planId(plan) },
+      });
+      break;
+    }
+    default:
+      fail(request, "invalid", "fake-operation", `unknown operation ${request.operation}`);
+  }
+}
