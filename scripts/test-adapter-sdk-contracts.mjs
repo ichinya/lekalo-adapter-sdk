@@ -41,12 +41,9 @@ const sha256 = (text) => "sha256:" + createHash("sha256").update(text).digest("h
 const read = (relative) => readFileSync(join(ROOT, relative), "utf8");
 
 
-  fail("external-package-custody", "source snapshot or custody regression checks failed");
-}
-
 // Pinned Ajv 8.20.0 through NODE_PATH / LEKALO_AJV_NODE_PATH (repo-wide
 // schema-gate convention; CI provisions it outside the checkout).
-const require_ = createRequire(import.meta.url);
+const require_ = createRequire(process.env.LEKALO_AJV_NODE_PATH ? process.env.LEKALO_AJV_NODE_PATH + "/" : import.meta.url);
 let Ajv;
 try {
   const nodePath = process.env.LEKALO_AJV_NODE_PATH ?? "";
