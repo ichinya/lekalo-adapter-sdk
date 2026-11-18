@@ -1,0 +1,12 @@
+{
+  "schema": "lekalo/package/v1",
+  "id": "lekalo-adapter-sdk",
+  "version": "0.1.0",
+  "kind": "library",
+  "files": [
+    "runtime/tree-sitter/index.cjs",
+    "runtime/tree-sitter/tree-sitter.cjs",
+    "runtime/tree-sitter/tree-sitter.wasm",
+    "runtime/tree-sitter/LICENSE"
+  ]
+}
