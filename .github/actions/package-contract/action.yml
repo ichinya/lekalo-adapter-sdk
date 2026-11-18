@@ -1,0 +1,35 @@
+name: Check a package using the public Lekalo CLI
+description: Build a pinned host and execute the package-owned integration fixture
+inputs:
+  host:
+    description: Full commit SHA of the host under test
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        repository: ichinya/lekalo
+        ref: ${{ inputs.host }}
+        path: .ci/host
+        persist-credentials: false
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 24.x
+        package-manager-cache: false
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Run the package contract
+      shell: bash
+      env:
+        CARGO_INCREMENTAL: '0'
+        CARGO_PROFILE_DEV_DEBUG: '0'
+      run: |
+        set -euo pipefail
+        export CARGO_TARGET_DIR="$RUNNER_TEMP/lekalo-contract-host"
+        cargo build --manifest-path .ci/host/Cargo.toml --locked -p lekalo-cli --bin lekalo
+        export LEKALO_BIN="$CARGO_TARGET_DIR/debug/lekalo"
+        if [[ -f test/portable-contract.json ]]; then
+          node --test "$GITHUB_ACTION_PATH/../../../testing/portable-contract.mjs"
+        else
+          node --test test/host-contract.mjs
+        fi
