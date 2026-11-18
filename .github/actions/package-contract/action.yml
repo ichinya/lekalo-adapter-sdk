@@ -18,6 +18,24 @@ runs:
         node-version: 24.x
         package-manager-cache: false
     - uses: dtolnay/rust-toolchain@stable
+    - name: Prepare bubblewrap on GitHub-hosted Linux
+      if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+      id: confinement
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ ! -x /usr/bin/bwrap ]]; then
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+        fi
+        if ! /usr/bin/bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true; then
+          bash .ci/host/.github/ci/bwrap-apparmor.sh load
+          echo 'loaded=true' >> "$GITHUB_OUTPUT"
+        fi
+    - name: Verify the Linux namespace backend
+      if: runner.os == 'Linux'
+      shell: bash
+      run: /usr/bin/bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
     - name: Run the package contract
       shell: bash
       env:
@@ -33,3 +51,7 @@ runs:
         else
           node --test test/host-contract.mjs
         fi
+    - name: Remove the job's AppArmor policy
+      if: always() && steps.confinement.outputs.loaded == 'true'
+      shell: bash
+      run: bash .ci/host/.github/ci/bwrap-apparmor.sh remove
