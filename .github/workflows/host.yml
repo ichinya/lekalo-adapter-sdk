@@ -110,6 +110,7 @@ jobs:
           set -euo pipefail
           node scripts/test-adapter-sdk-conformance.mjs --language all --profile strict --repeats 3 --timeout-ms 60000
           node scripts/test-adapter-sdk-packages.mjs --verify
+      - uses: ichinya/lekalo-adapter-sdk/.github/actions/expression-conformance@1053547d61d6d2a0ae2310a035ab9ab8d672930d
       - name: Remove the CI-only AppArmor launcher prerequisite
         if: always() && runner.os == 'Linux'
         timeout-minutes: 1
