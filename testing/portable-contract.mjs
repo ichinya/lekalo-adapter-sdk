@@ -13,10 +13,12 @@ const cli = resolve(process.env.LEKALO_BIN);
 const local = 'path:' + candidate;
 
 test(manifest.id + ' accepts and rejects its contract fixture', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'lekalo-owner-'));
-  t.after(() => rmSync(dir, {recursive: true, force: true}));
+  const scratch = mkdtempSync(join(tmpdir(), 'lekalo-owner-'));
+  const dir = join(scratch, 'project');
+  mkdirSync(dir);
+  t.after(() => rmSync(scratch, {recursive: true, force: true}));
   const write = (path, value) => writeFileSync(join(dir, path), JSON.stringify(value));
-  const env = {...process.env, LEKALO_PACKAGE_HOME: join(dir, 'cache')};
+  const env = {...process.env, LEKALO_PACKAGE_HOME: join(scratch, 'cache')};
   delete env.LEKALO_PROJECT;
   delete env.LEKALO_SERVICES;
   function run(operation, expected) {

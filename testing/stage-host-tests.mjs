@@ -11,7 +11,7 @@ const manifest = join(candidate, 'host-test-paths.json');
 if (existsSync(manifest)) {
   const scopes = JSON.parse(readFileSync(manifest));
   for (const scope of scopes) {
-    assert.ok(/^(scripts|tests|adapters|examples)\/[\w./-]+$/.test(scope));
+    assert.ok(/^(scripts|tests|adapters|examples|crates\/lekalo-(?:cli|core)\/(?:tests|examples))\/[\w./-]+$/.test(scope));
     assert.ok(scope.split('/').every(part => part !== '.' && part !== '..' && part !== ''));
     rmSync(join(host, scope), {recursive: true, force: true});
   }
@@ -24,4 +24,17 @@ if (existsSync(manifest)) {
     copyFileSync(join(candidate, path), destination);
   }
 }
-appendFileSync(process.env.GITHUB_ENV, 'LEKALO_EXTERNAL_TOOLS=' + JSON.stringify({[id]:candidate}) + '\n');
+const overrides = {[id]:candidate};
+const companions = join(candidate, 'host-test-companions.json');
+if (existsSync(companions)) {
+  const lock = JSON.parse(readFileSync(join(host, 'external-tools.lock.json')));
+  for (const name of JSON.parse(readFileSync(companions))) {
+    const pin = lock.packages[name];
+    assert.ok(pin && /^[0-9a-f]{40}$/.test(pin.commit));
+    const checkout = join(host, '.ci', name);
+    execFileSync('git', ['clone', '--no-checkout', '--config', 'core.autocrlf=false', '--', pin.repository, checkout]);
+    execFileSync('git', ['-C', checkout, 'checkout', '--detach', pin.commit]);
+    overrides[name] = checkout;
+  }
+}
+appendFileSync(process.env.GITHUB_ENV, 'LEKALO_EXTERNAL_TOOLS=' + JSON.stringify(overrides) + '\n');

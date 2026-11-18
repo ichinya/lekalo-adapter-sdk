@@ -7,6 +7,10 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Preserve package fixture bytes on Windows
+      if: runner.os == 'Windows'
+      shell: bash
+      run: git config --global core.autocrlf false
     - uses: actions/checkout@v7
       with:
         repository: ichinya/lekalo
