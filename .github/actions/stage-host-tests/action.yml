@@ -1,0 +1,25 @@
+name: Prepare a pinned host for package integration tests
+description: Materialize the candidate package and its tests in a disposable host checkout
+inputs:
+  host:
+    description: Exact host commit used by the integration suite
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v7
+      with:
+        repository: ichinya/lekalo
+        ref: ${{ inputs.host }}
+        persist-credentials: false
+    - uses: actions/checkout@v7
+      with:
+        path: .ci/candidate
+        persist-credentials: false
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 24.x
+        package-manager-cache: false
+    - name: Install the candidate's test inputs
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/../../../testing/stage-host-tests.mjs"
