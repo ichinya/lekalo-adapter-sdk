@@ -1,0 +1,26 @@
+name: Verify expression renderer parity
+description: Execute the candidate renderer and pinned peer renderers on the shared vector corpus
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v7
+      with:
+        go-version: '1.25'
+        cache: false
+    - uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.3'
+        tools: none
+    - name: Execute the reference vectors and document-boundary probes
+      shell: bash
+      run: |
+        set -euo pipefail
+        go version
+        php --version
+        node --version
+        suite="$GITHUB_ACTION_PATH/../../../testing/expression-conformance"
+        cp "$suite/projection.rs" crates/lekalo-core/tests/renderer_projection.rs
+        cp "$suite/programs.rs" crates/lekalo-core/tests/renderer_programs.rs
+        cp "$suite/cli.rs" crates/lekalo-cli/tests/renderer_cli.rs
+        cargo test --locked -p lekalo-core --test renderer_projection --test renderer_programs
+        cargo test --locked -p lekalo-cli --test renderer_cli
